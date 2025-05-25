@@ -37,48 +37,188 @@ Sistem monitoring dan kontrol otomatis untuk pompa air sumur bor yang menggunaka
 - Kabel dan connector
 - Box/housing tahan cuaca
 
-## 📐 Diagram Wiring
+## 📐 Diagram Wiring (Detail Lengkap)
 
+### ESP32 NodeMCU Pinout Configuration:
 ```
-ESP32 NodeMCU Pinout:
-┌─────────────────────────────────────┐
-│  PIN 34 ←→ Sensor Tegangan Surya    │
-│  PIN 35 ←→ Sensor Arus Surya        │
-│  PIN 32 ←→ Sensor Tegangan Baterai  │
-│  PIN 33 ←→ Sensor Arus Baterai      │
-│  PIN 2  ←→ Relay Pompa              │
-│  PIN 4  ←→ LED Status               │
-│  GND    ←→ Ground bersama            │
-│  3.3V   ←→ VCC sensor               │
-└─────────────────────────────────────┘
+ESP32 DevKit v1 - 30 Pin Layout:
+┌─────────────────────────────────────────────────────────────┐
+│  EN     │ 3V3 │ VP(36) │ VN(39) │ D34 │ D35 │ D32 │ D33    │
+│  D23    │ GND │ D22    │ D21    │ D19 │ D18 │ D5  │ D17    │
+│         │     │        │        │     │     │     │        │
+│  D4     │ D0  │ D2     │ D15    │ D8  │ D7  │ D6  │ D20    │
+│  RX2    │ TX2 │ D26    │ D25    │ D27 │ D14 │ D12 │ D13    │
+└─────────────────────────────────────────────────────────────┘
+
+Pin Assignment:
+• D34 (ADC1_CH6) ←→ Sensor Tegangan Panel Surya
+• D35 (ADC1_CH7) ←→ Sensor Arus Panel Surya (ACS712)
+• D32 (ADC1_CH4) ←→ Sensor Tegangan Baterai  
+• D33 (ADC1_CH5) ←→ Sensor Arus Baterai (ACS712)
+• D2  (GPIO2)    ←→ Relay Control Pin (Pompa)
+• D4  (GPIO4)    ←→ LED Status Sistem
+• 3V3            ←→ VCC untuk sensor & pembagi tegangan
+• GND            ←→ Ground bersama semua komponen
 ```
 
-### Skema Lengkap:
+### 🔌 Wiring Diagram Lengkap:
 
+#### 1. Sistem Daya Utama:
 ```
-Panel Surya (+) ──┬─→ Charge Controller (+) ──→ Baterai (+)
-                  │
-                  └─→ Sensor Arus Surya ──→ ESP32 Pin 35
-                      │
-                      └─→ Pembagi Tegangan ──→ ESP32 Pin 34
+Panel Surya (12V-18V)
+    │
+    ├─(+)─→ Charge Controller Input (+)
+    └─(-)─→ Charge Controller Input (-)
+                │
+                ├─(+)─→ Baterai 12V (+)
+                └─(-)─→ Baterai 12V (-)
+```
 
-Baterai (+) ──┬─→ Sensor Arus Baterai ──→ ESP32 Pin 33
+#### 2. Sensor Tegangan Panel Surya:
+```
+Panel Surya (+) ─┬─→ R1 (10kΩ) ─┬─→ R2 (1kΩ) ─→ GND
+                 │               │
+                 │               ├─→ C1 (100nF) ─→ GND
+                 │               │
+                 │               └─→ ESP32 Pin 34 (ADC)
+                 │
+                 └─→ LED Indikator (Opsional)
+```
+
+#### 3. Sensor Arus Panel Surya (ACS712-20A):
+```
+Panel Surya (+) ─→ ACS712 IP+ Terminal
+ACS712 IP- Terminal ─→ Charge Controller Input
+ACS712 VCC ─→ ESP32 3.3V
+ACS712 GND ─→ ESP32 GND  
+ACS712 OUT ─→ ESP32 Pin 35 (ADC)
+```
+
+#### 4. Sensor Tegangan Baterai:
+```
+Baterai (+) ─┬─→ R3 (10kΩ) ─┬─→ R4 (1kΩ) ─→ GND
+             │               │
+             │               ├─→ C2 (100nF) ─→ GND
+             │               │
+             │               └─→ ESP32 Pin 32 (ADC)
+             │
+             └─→ Fuse 10A (Proteksi)
+```
+
+#### 5. Sensor Arus Baterai (ACS712-20A):
+```
+Baterai (+) ─→ ACS712 IP+ Terminal  
+ACS712 IP- Terminal ─→ Relay Module VCC
+ACS712 VCC ─→ ESP32 3.3V
+ACS712 GND ─→ ESP32 GND
+ACS712 OUT ─→ ESP32 Pin 33 (ADC)
+```
+
+#### 6. Relay Module & Pompa:
+```
+ESP32 Pin 2 ─→ Relay IN1
+ESP32 3.3V ─→ Relay VCC
+ESP32 GND ─→ Relay GND
+
+Baterai (+) ─→ Relay COM (Common)
+Relay NO (Normally Open) ─→ Pompa (+)
+Pompa (-) ─→ Baterai (-)
+```
+
+#### 7. LED Status & Indikator:
+```
+ESP32 Pin 4 ─→ R5 (220Ω) ─→ LED (+)
+LED (-) ─→ ESP32 GND
+```
+
+### 🔧 Detail Komponen & Spesifikasi:
+
+#### **Pembagi Tegangan (Voltage Divider):**
+```
+Formula: Vout = Vin × (R2 / (R1 + R2))
+Dengan R1=10kΩ, R2=1kΩ:
+Vout = Vin × (1kΩ / 11kΩ) = Vin × 0.091
+
+Contoh:
+- Panel Surya 18V → ADC = 18V × 0.091 = 1.64V ✓
+- Baterai 14V → ADC = 14V × 0.091 = 1.27V ✓
+- Maximum Safe: 24V → ADC = 24V × 0.091 = 2.18V ✓
+
+Note: ESP32 ADC maksimum 3.3V, jadi aman untuk tegangan hingga 36V
+```
+
+#### **Sensor Arus ACS712-20A:**
+```
+Spesifikasi:
+• Supply Voltage: 5V (tapi bisa 3.3V dengan akurasi berkurang)
+• Sensitivity: 100mV/A
+• Zero Current Output: VCC/2 (2.5V di 5V, 1.65V di 3.3V)
+• Range: -20A to +20A
+• Bandwidth: DC to 20kHz
+
+Formula Konversi:
+Arus (A) = (Vadc - Vzero) / Sensitivity
+Dimana:
+- Vadc = Tegangan yang dibaca ADC
+- Vzero = 1.65V (untuk supply 3.3V)  
+- Sensitivity = 0.1V/A
+```
+
+#### **Relay Module 4-Channel:**
+```
+Spesifikasi:
+• Control Voltage: 3.3V - 5V
+• Trigger: LOW (Active Low)
+• Contact Rating: 10A 250VAC / 10A 30VDC
+• Isolation: 1500V rms
+• LED Indikator: Ya (per channel)
+
+Wiring:
+VCC ─→ ESP32 3.3V (atau 5V jika tersedia)
+GND ─→ ESP32 GND
+IN1 ─→ ESP32 Pin 2 (Control Signal)
+```
+
+### 🛡️ Proteksi & Keamanan:
+
+#### **1. Proteksi Over-Voltage:**
+```
+Zener Diode 3V ─┬─→ ESP32 ADC Pin
+                │
+                └─→ R (1kΩ) ─→ GND
+```
+
+#### **2. Proteksi Reverse Polarity:**
+```
+Input (+) ─→ Diode 1N4007 ─→ Circuit (+)
+Input (-) ─→ Circuit (-)
+```
+
+#### **3. Filter Noise:**
+```
+Signal ─→ R (100Ω) ─→ ADC Pin
               │
-              └─→ Pembagi Tegangan ──→ ESP32 Pin 32
-
-Baterai (+) ──→ Relay Module ──→ Pompa (+)
-ESP32 Pin 2 ──→ Relay Control
-Ground      ──→ Ground bersama semua komponen
+              C (100nF) ─→ GND
 ```
 
-### Detail Pembagi Tegangan:
-```
-Vin (+) ──┬─→ R1 (10kΩ) ──┬─→ R2 (1kΩ) ──→ GND
-          │                │
-          │                └─→ ESP32 ADC Pin
-          │
-          └─→ Kapasitor 100nF ──→ GND
-```
+### 📋 BOM (Bill of Materials):
+
+| No | Komponen | Qty | Spesifikasi | Fungsi |
+|----|----------|-----|-------------|---------|
+| 1  | ESP32 NodeMCU | 1 | 30-pin DevKit | Kontroller utama |
+| 2  | ACS712-20A | 2 | Current sensor | Sensor arus |
+| 3  | Resistor 10kΩ | 2 | 1/4W, 5% | Pembagi tegangan |
+| 4  | Resistor 1kΩ | 2 | 1/4W, 5% | Pembagi tegangan |
+| 5  | Resistor 220Ω | 1 | 1/4W, 5% | LED limiter |
+| 6  | Resistor 100Ω | 4 | 1/4W, 5% | Filter noise |
+| 7  | Kapasitor 100nF | 4 | Ceramic | Filter noise |
+| 8  | Relay Module | 1 | 4-Channel, 10A | Switch pompa |
+| 9  | LED 5mm | 1 | Red/Green | Status indikator |
+| 10 | Diode 1N4007 | 2 | 1A, 1000V | Proteksi |
+| 11 | Zener 3.3V | 2 | 1W | Over-voltage protect |
+| 12 | Terminal Block | 4 | 2-pin, 10A | Koneksi |
+| 13 | Breadboard/PCB | 1 | Full-size | Base |
+| 14 | Jumper Wire | 1 set | Male-Male/Female | Koneksi |
 
 ## 🛠️ Instalasi Software
 
@@ -100,19 +240,180 @@ Vin (+) ──┬─→ R1 (10kΩ) ──┬─→ R2 (1kΩ) ──→ GND
 
 ### 2. Install Library Dependencies
 
-Install library berikut melalui Library Manager (Tools → Manage Libraries):
+#### **📚 Daftar Library yang Dibutuhkan:**
 
+| No | Library Name | Version | Author | Fungsi |
+|----|--------------|---------|---------|---------|
+| 1  | **Blynk** | v1.3.2+ | Volodymyr Shymanskyy | IoT Communication |
+| 2  | **WiFi** | Built-in | Espressif | WiFi Connection |
+| 3  | **SimpleTimer** | v1.0.0+ | Marcello Romani | Timer Management |
+
+#### **🔧 Cara Install Library Step-by-Step:**
+
+**Method 1: Via Arduino IDE Library Manager (Recommended)**
+
+1. **Buka Arduino IDE**
+2. **Akses Library Manager:**
+   ```
+   Tools → Manage Libraries... (atau Ctrl+Shift+I)
+   ```
+
+3. **Install Blynk Library:**
+   ```
+   • Ketik "Blynk" di search box
+   • Pilih "Blynk" by Volodymyr Shymanskyy  
+   • Klik "Install"
+   • Tunggu hingga selesai
+   ```
+
+4. **Install SimpleTimer Library:**
+   ```
+   • Ketik "SimpleTimer" di search box
+   • Pilih "SimpleTimer" by Marcello Romani
+   • Klik "Install" 
+   • Tunggu hingga selesai
+   ```
+
+5. **Verifikasi WiFi Library:**
+   ```
+   WiFi library sudah built-in di ESP32 core
+   Tidak perlu install terpisah
+   ```
+
+**Method 2: Manual Installation (Advanced)**
+
+Jika method 1 gagal, download manual:
+
+1. **Download Blynk Library:**
+   ```
+   URL: https://github.com/blynkkk/blynk-library/archive/master.zip
+   Extract ke: Arduino/libraries/Blynk/
+   ```
+
+2. **Download SimpleTimer:**
+   ```  
+   URL: https://github.com/marcelloromani/SimpleTimer/archive/master.zip
+   Extract ke: Arduino/libraries/SimpleTimer/
+   ```
+
+3. **Restart Arduino IDE**
+
+#### **✅ Verifikasi Instalasi:**
+
+Test dengan include statements:
 ```cpp
-// Library yang dibutuhkan:
-1. "Blynk" by Volodymyr Shymanskyy
-2. "WiFi" (sudah built-in ESP32)
-3. "SimpleTimer" by Marcello Romani
+#include <WiFi.h>          // ✓ Built-in ESP32
+#include <BlynkSimpleEsp32.h>  // ✓ Blynk Library  
+#include <SimpleTimer.h>   // ✓ SimpleTimer Library
 ```
 
-**Cara Install:**
-- Buka Tools → Manage Libraries
-- Cari nama library di search box
-- Klik "Install" pada library yang sesuai
+Jika tidak ada error merah, instalasi berhasil!
+
+#### **📖 Library Dependencies Detail:**
+
+**1. Blynk Library:**
+```cpp
+Files yang di-include:
+• BlynkSimpleEsp32.h - Main Blynk ESP32 support
+• Blynk/BlynkApi.h - Core Blynk API functions  
+• Blynk/BlynkProtocol.h - Communication protocol
+• Blynk/BlynkTimer.h - Built-in timer functions
+
+Functions yang digunakan:
+• Blynk.begin() - Initialize connection
+• Blynk.run() - Main loop processor
+• Blynk.virtualWrite() - Send data to app
+• BLYNK_WRITE() - Receive data from app
+```
+
+**2. WiFi Library (ESP32 Built-in):**
+```cpp
+Files yang di-include:
+• WiFi.h - Main WiFi functions
+• WiFiClient.h - TCP client support
+• WiFiServer.h - TCP server support
+
+Functions yang digunakan:
+• WiFi.begin() - Connect to network
+• WiFi.status() - Check connection status  
+• WiFi.localIP() - Get assigned IP
+• WiFi.reconnect() - Reconnect if disconnected
+```
+
+**3. SimpleTimer Library:**
+```cpp
+Files yang di-include:
+• SimpleTimer.h - Timer management
+
+Functions yang digunakan:
+• setInterval() - Set recurring timer
+• run() - Execute timer callbacks
+• deleteTimer() - Remove timer
+• setTimeout() - One-time timer
+```
+
+#### **🚨 Troubleshooting Library Issues:**
+
+**Problem 1: "Blynk.h not found"**
+```
+Solution:
+1. Pastikan library terinstall di folder yang benar
+2. Restart Arduino IDE  
+3. Cek di File → Preferences → Sketchbook location
+4. Manual install jika perlu
+```
+
+**Problem 2: "SimpleTimer.h not found"**  
+```
+Solution:
+1. Download manual dari GitHub
+2. Extract ke folder libraries
+3. Restart Arduino IDE
+4. Compile ulang sketch
+```
+
+**Problem 3: "WiFi.h not found"**
+```
+Solution:
+1. Pastikan ESP32 board package terinstall
+2. Pilih board "ESP32 Dev Module"
+3. Update ESP32 core jika perlu
+4. Reinstall ESP32 board package
+```
+
+**Problem 4: Compilation Errors**
+```
+Common Issues:
+• Version incompatibility → Update semua library
+• Missing dependencies → Install semua required library  
+• Board not selected → Pilih "ESP32 Dev Module"
+• Wrong port → Pilih COM port yang benar
+```
+
+#### **📊 Library Size & Memory Usage:**
+
+| Library | Flash Usage | RAM Usage | Notes |
+|---------|-------------|-----------|-------|
+| Blynk | ~45KB | ~8KB | Core IoT functions |
+| WiFi | ~25KB | ~4KB | Built-in, efficient |
+| SimpleTimer | ~2KB | ~1KB | Lightweight timer |
+| **Total** | **~72KB** | **~13KB** | Tersisa banyak space |
+
+ESP32 Specifications:
+- Flash Memory: 4MB (4096KB)  
+- SRAM: 520KB
+- Usage: <2% Flash, <3% RAM ✓
+
+#### **🔄 Keep Libraries Updated:**
+
+Untuk update library secara berkala:
+```
+1. Tools → Manage Libraries
+2. Filter: "Updatable"  
+3. Update library yang tersedia
+4. Test kode setelah update
+5. Rollback jika ada masalah
+```
 
 ### 3. Setup Akun Blynk
 
