@@ -1,19 +1,19 @@
 /*
  * Sistem Monitoring Pompa Air Sumur Bor Bertenaga Surya
- * Berbasis Fuzzy Logic dan IoT (Blynk)
+ * Berbasis Fuzzy Logic dan IoT (Blynk) - MODIFIED VERSION
  * 
- * Deskripsi: Sistem otomatis untuk mengontrol pompa air berdasarkan
- * kondisi tegangan dan arus dari panel surya dan baterai menggunakan
- * logika fuzzy dan monitoring real-time melalui aplikasi Blynk
+ * Deskripsi: Sistem dual-control untuk pompa air:
+ * 1. Kontrol OTOMATIS: PV + Fuzzy Logic → Relay Channel 1
+ * 2. Kontrol MANUAL: Baterai + Blynk → Relay Channel 2
  * 
  * Komponen:
  * - ESP32 NodeMCU
- * - Sensor Tegangan
- * - Sensor Arus (ACS712)
- * - Relay 4 Channel
- * - Panel Surya
+ * - Sensor Tegangan PV
+ * - Sensor Arus PV (ACS712)
+ * - Relay 4 Channel (menggunakan channel 1 & 2)
+ * - Panel Surya (PV)
  * - Pompa Air DC
- * - Baterai
+ * - Baterai (untuk kontrol manual)
  */
 
 #include <WiFi.h>
@@ -22,7 +22,7 @@
 
 // Kredensial Blynk - GANTI DENGAN KREDENSIAL ANDA
 #define BLYNK_TEMPLATE_ID "TMPL_ID_ANDA"
-#define BLYNK_DEVICE_NAME "Monitor Pompa Surya"
+#define BLYNK_DEVICE_NAME "Monitor Pompa Surya Dual Control"
 #define BLYNK_AUTH_TOKEN "TOKEN_BLYNK_ANDA"
 #define BLYNK_PRINT Serial
 
@@ -31,432 +31,609 @@ const char* ssid = "NAMA_WIFI_ANDA";
 const char* password = "PASSWORD_WIFI_ANDA";
 
 // Pin Konfigurasi ESP32
-#define PIN_SENSOR_TEGANGAN_SURYA 34      // Pin ADC untuk sensor tegangan panel surya
-#define PIN_SENSOR_ARUS_SURYA 35          // Pin ADC untuk sensor arus panel surya
-#define PIN_SENSOR_TEGANGAN_BATERAI 32    // Pin ADC untuk sensor tegangan baterai
-#define PIN_SENSOR_ARUS_BATERAI 33        // Pin ADC untuk sensor arus baterai
-#define PIN_RELAY_POMPA 2                 // Pin kontrol relay pompa
-#define PIN_LED_STATUS 4                  // Pin LED status sistem
+#define PIN_SENSOR_TEGANGAN_PV 34         // Pin ADC untuk sensor tegangan PV
+#define PIN_SENSOR_ARUS_PV 35             // Pin ADC untuk sensor arus PV
+#define PIN_RELAY_POMPA_AUTO 2            // Pin kontrol relay pompa otomatis (Channel 1)
+#define PIN_RELAY_POMPA_MANUAL 4          // Pin kontrol relay pompa manual (Channel 2)
+#define PIN_LED_STATUS 5                  // Pin LED status sistem
+#define PIN_LED_AUTO 18                   // Pin LED indikator mode otomatis
+#define PIN_LED_MANUAL 19                 // Pin LED indikator mode manual
 
 // Konstanta Kalibrasi Sensor
 #define RASIO_PEMBAGI_TEGANGAN 11.0       // Rasio pembagi tegangan (R1+R2)/R2
 #define SENSITIVITAS_SENSOR_ARUS 0.1      // 100mV/A untuk ACS712-20A
-#define OFFSET_SENSOR_ARUS 2.5            // Offset 2.5V pada 0A
+#define OFFSET_SENSOR_ARUS 1.65           // Offset 1.65V pada 0A (untuk supply 3.3V)
 #define RESOLUSI_ADC 4095.0               // ADC 12-bit
 #define TEGANGAN_REFERENSI_ADC 3.3        // Tegangan referensi ADC
 
 // Virtual Pin Blynk
-#define VPIN_TEGANGAN_SURYA V0
-#define VPIN_ARUS_SURYA V1
-#define VPIN_TEGANGAN_BATERAI V2
-#define VPIN_ARUS_BATERAI V3
-#define VPIN_STATUS_POMPA V4
-#define VPIN_DAYA_SURYA V5
-#define VPIN_DAYA_BATERAI V6
-#define VPIN_KONTROL_MANUAL V7
+#define VPIN_TEGANGAN_PV V0               // Display tegangan PV
+#define VPIN_ARUS_PV V1                   // Display arus PV
+#define VPIN_DAYA_PV V2                   // Display daya PV
+#define VPIN_STATUS_AUTO V3               // LED status pompa otomatis
+#define VPIN_STATUS_MANUAL V4             // LED status pompa manual
+#define VPIN_KONTROL_MANUAL V5            // Button kontrol manual pompa
+#define VPIN_EFISIENSI_PV V6              // Gauge efisiensi PV
+#define VPIN_TERMINAL_LOG V7              // Terminal untuk log sistem
+#define VPIN_STATISTIK V8                 // Display statistik
+#define VPIN_MODE_PRIORITAS V9            // Switch prioritas mode
 
-// Struktur Data Input Fuzzy
-struct InputFuzzy {
-  float tegangan_surya;
-  float arus_surya;
-  float tegangan_baterai;
-  float arus_baterai;
-  float daya_surya;
-  float daya_baterai;
+// Konstanta Sistem
+#define DAYA_NOMINAL_PV 100.0             // Daya nominal PV dalam Watt
+#define TEGANGAN_MIN_PV 10.0              // Tegangan minimum PV untuk operasi
+#define ARUS_MIN_PV 0.5                   // Arus minimum PV untuk operasi
+#define INTERVAL_SENSOR 1000              // Interval pembacaan sensor (ms)
+#define INTERVAL_BLYNK 2000               // Interval pengiriman data Blynk (ms)
+#define INTERVAL_STATISTIK 30000          // Interval statistik (ms)
+
+// Struktur Data Sensor PV
+struct SensorPV {
+  float tegangan;
+  float arus;
+  float daya;
+  bool valid;
+  unsigned long timestamp;
 };
 
-// Struktur Data Output Fuzzy
-struct OutputFuzzy {
-  bool status_pompa;
-  float tingkat_kepercayaan;
-  String alasan_keputusan;
-};
-
-// Struktur Fungsi Keanggotaan
+// Struktur Fungsi Keanggotaan Fuzzy
 struct FungsiKeanggotaan {
   float rendah;
   float sedang;
   float tinggi;
 };
 
-// Variabel Global
-InputFuzzy sensor_data;
-OutputFuzzy hasil_fuzzy;
-SimpleTimer timer;
-bool sistem_terinisialisasi = false;
-bool mode_manual = false;
-unsigned long waktu_baca_sensor_terakhir = 0;
-const unsigned long INTERVAL_BACA_SENSOR = 1000; // 1 detik
+// Struktur Output Fuzzy
+struct OutputFuzzy {
+  bool pompa_hidup;
+  float confidence_level;
+  String reasoning;
+  float fuzzy_output_value;
+};
 
-// Statistik sistem
-unsigned long total_waktu_hidup_pompa = 0;
-unsigned long waktu_mulai_pompa = 0;
-bool pompa_sedang_hidup = false;
-float konsumsi_energi_total = 0;
+// Struktur Kontrol Pompa
+struct KontrolPompa {
+  bool auto_active;
+  bool manual_active;
+  bool prioritas_manual;          // True = manual priority, False = auto priority
+  unsigned long auto_start_time;
+  unsigned long manual_start_time;
+  unsigned long total_auto_runtime;
+  unsigned long total_manual_runtime;
+};
+
+// Variabel Global
+SensorPV data_pv;
+OutputFuzzy hasil_fuzzy;
+KontrolPompa kontrol_pompa;
+SimpleTimer timer;
+bool sistem_ready = false;
+unsigned long last_sensor_read = 0;
+
+// Statistik Sistem
+struct StatistikSistem {
+  float total_energi_pv = 0;
+  float rata_rata_efisiensi = 0;
+  unsigned long total_operasi = 0;
+  unsigned long auto_activations = 0;
+  unsigned long manual_activations = 0;
+  float max_daya_pv = 0;
+} stats;
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("=== SISTEM MONITORING POMPA AIR TENAGA SURYA ===");
-  Serial.println("Menggunakan Fuzzy Logic dan IoT");
-  Serial.println("Menginisialisasi sistem...");
+  Serial.println("=== SISTEM MONITORING POMPA DUAL CONTROL ===");
+  Serial.println("Mode: PV Auto + Manual Battery Control");
+  Serial.println("Initializing system...");
   
-  // Inisialisasi pin
-  pinMode(PIN_RELAY_POMPA, OUTPUT);
+  // Inisialisasi pin output
+  pinMode(PIN_RELAY_POMPA_AUTO, OUTPUT);
+  pinMode(PIN_RELAY_POMPA_MANUAL, OUTPUT);
   pinMode(PIN_LED_STATUS, OUTPUT);
-  digitalWrite(PIN_RELAY_POMPA, LOW);  // Pompa OFF awal
+  pinMode(PIN_LED_AUTO, OUTPUT);
+  pinMode(PIN_LED_MANUAL, OUTPUT);
+  
+  // Set kondisi awal - semua relay OFF
+  digitalWrite(PIN_RELAY_POMPA_AUTO, LOW);
+  digitalWrite(PIN_RELAY_POMPA_MANUAL, LOW);
   digitalWrite(PIN_LED_STATUS, LOW);
+  digitalWrite(PIN_LED_AUTO, LOW);
+  digitalWrite(PIN_LED_MANUAL, LOW);
   
-  // Inisialisasi sensor ADC
-  analogReadResolution(12); // Set resolusi ADC 12-bit
+  // Inisialisasi struktur kontrol
+  kontrol_pompa = {false, false, false, 0, 0, 0, 0};
   
-  // Koneksi WiFi
+  // Konfigurasi ADC
+  analogReadResolution(12);
+  analogSetAttenuation(ADC_11db);       // Untuk range 0-3.3V
+  
+  // Inisialisasi WiFi
   inisialisasiWiFi();
   
   // Inisialisasi Blynk
   if (WiFi.status() == WL_CONNECTED) {
     Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
-    Serial.println("Blynk berhasil diinisialisasi");
+    Serial.println("Blynk connected successfully");
+    
+    // Sync dengan Blynk untuk mendapatkan status widget
+    Blynk.syncAll();
   }
   
-  // Setup timer untuk membaca sensor dan mengirim data
-  timer.setInterval(2000L, kirimDataSensor);      // Kirim data setiap 2 detik
-  timer.setInterval(1000L, prosesLogicFuzzy);     // Proses fuzzy setiap 1 detik
-  timer.setInterval(30000L, kirimStatistik);      // Kirim statistik setiap 30 detik
+  // Setup timer tasks
+  timer.setInterval(INTERVAL_SENSOR, bacaSensorPV);
+  timer.setInterval(INTERVAL_BLYNK, kirimDataBlynk);
+  timer.setInterval(INTERVAL_STATISTIK, updateStatistik);
+  timer.setInterval(5000L, logStatusSistem);
   
-  // Inisialisasi selesai
-  sistem_terinisialisasi = true;
+  // Test relay saat startup
+  testRelay();
+  
+  // Sistem siap
+  sistem_ready = true;
   digitalWrite(PIN_LED_STATUS, HIGH);
   
-  Serial.println("Sistem siap beroperasi!");
+  Serial.println("=== SISTEM SIAP BEROPERASI ===");
+  Serial.println("Auto Control: PV → Fuzzy Logic → Relay Ch1");
+  Serial.println("Manual Control: Battery → Blynk → Relay Ch2");
   Serial.println("=====================================");
 }
 
 void loop() {
-  // Jalankan Blynk
+  // Jalankan Blynk (prioritas tinggi)
   if (WiFi.status() == WL_CONNECTED) {
     Blynk.run();
   }
   
-  // Jalankan timer
+  // Jalankan timer tasks
   timer.run();
   
-  // Baca sensor secara berkala
-  if (millis() - waktu_baca_sensor_terakhir >= INTERVAL_BACA_SENSOR) {
-    bacaSensorSemua();
-    waktu_baca_sensor_terakhir = millis();
+  // Proses kontrol utama
+  if (millis() - last_sensor_read >= INTERVAL_SENSOR) {
+    // Baca sensor PV
+    bacaSensorPV();
+    
+    // Proses fuzzy logic untuk kontrol otomatis
+    if (data_pv.valid) {
+      prosesFuzzyLogic();
+      eksekusiKontrolOtomatis();
+    }
+    
+    // Update LED indikator
+    updateLEDStatus();
+    
+    last_sensor_read = millis();
   }
   
-  // Cek koneksi WiFi dan reconnect jika perlu
+  // Maintenance tasks
   cekKoneksiWiFi();
+  proteksiSistem();
   
-  delay(100); // Delay kecil untuk stabilitas
+  delay(50); // Prevent watchdog reset
 }
 
-// Fungsi Inisialisasi WiFi
+// ===== FUNGSI INISIALISASI =====
+
 void inisialisasiWiFi() {
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
-  Serial.print("Menghubungkan ke WiFi");
   
-  int percobaan_wifi = 0;
-  while (WiFi.status() != WL_CONNECTED && percobaan_wifi < 20) {
+  Serial.print("Connecting to WiFi");
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
     delay(500);
     Serial.print(".");
-    percobaan_wifi++;
+    attempts++;
   }
   
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println();
-    Serial.print("WiFi terhubung! IP: ");
+    Serial.print("WiFi connected! IP: ");
     Serial.println(WiFi.localIP());
-    digitalWrite(PIN_LED_STATUS, HIGH);
+    Serial.print("Signal strength: ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
   } else {
     Serial.println();
-    Serial.println("Koneksi WiFi gagal! Berjalan dalam mode offline.");
+    Serial.println("WiFi connection failed! Running in offline mode.");
   }
 }
 
-// Fungsi untuk membaca semua sensor
-void bacaSensorSemua() {
-  // Baca sensor panel surya
-  sensor_data.tegangan_surya = bacaSensorTegangan(PIN_SENSOR_TEGANGAN_SURYA);
-  sensor_data.arus_surya = bacaSensorArus(PIN_SENSOR_ARUS_SURYA);
-  sensor_data.daya_surya = sensor_data.tegangan_surya * sensor_data.arus_surya;
+void testRelay() {
+  Serial.println("Testing relay channels...");
   
-  // Baca sensor baterai
-  sensor_data.tegangan_baterai = bacaSensorTegangan(PIN_SENSOR_TEGANGAN_BATERAI);
-  sensor_data.arus_baterai = bacaSensorArus(PIN_SENSOR_ARUS_BATERAI);
-  sensor_data.daya_baterai = sensor_data.tegangan_baterai * sensor_data.arus_baterai;
+  // Test relay auto
+  Serial.println("Testing Auto Relay (Ch1)");
+  digitalWrite(PIN_RELAY_POMPA_AUTO, HIGH);
+  digitalWrite(PIN_LED_AUTO, HIGH);
+  delay(1000);
+  digitalWrite(PIN_RELAY_POMPA_AUTO, LOW);
+  digitalWrite(PIN_LED_AUTO, LOW);
+  
+  delay(500);
+  
+  // Test relay manual
+  Serial.println("Testing Manual Relay (Ch2)");
+  digitalWrite(PIN_RELAY_POMPA_MANUAL, HIGH);
+  digitalWrite(PIN_LED_MANUAL, HIGH);
+  delay(1000);
+  digitalWrite(PIN_RELAY_POMPA_MANUAL, LOW);
+  digitalWrite(PIN_LED_MANUAL, LOW);
+  
+  Serial.println("Relay test completed");
+}
+
+// ===== FUNGSI SENSOR =====
+
+void bacaSensorPV() {
+  // Baca multiple sample untuk akurasi
+  const int num_samples = 10;
+  long sum_tegangan = 0;
+  long sum_arus = 0;
+  
+  for (int i = 0; i < num_samples; i++) {
+    sum_tegangan += analogRead(PIN_SENSOR_TEGANGAN_PV);
+    sum_arus += analogRead(PIN_SENSOR_ARUS_PV);
+    delay(10);
+  }
+  
+  // Hitung rata-rata
+  float avg_tegangan_adc = sum_tegangan / (float)num_samples;
+  float avg_arus_adc = sum_arus / (float)num_samples;
+  
+  // Konversi ke nilai sebenarnya
+  data_pv.tegangan = konversiTegangan(avg_tegangan_adc);
+  data_pv.arus = konversiArus(avg_arus_adc);
+  data_pv.daya = data_pv.tegangan * data_pv.arus;
+  data_pv.timestamp = millis();
+  
+  // Validasi data
+  data_pv.valid = (data_pv.tegangan >= 0 && data_pv.tegangan <= 30 && 
+                   data_pv.arus >= 0 && data_pv.arus <= 15);
   
   // Debug output
-  Serial.print("Panel Surya - V: ");
-  Serial.print(sensor_data.tegangan_surya, 2);
-  Serial.print("V, I: ");
-  Serial.print(sensor_data.arus_surya, 2);
-  Serial.print("A, P: ");
-  Serial.print(sensor_data.daya_surya, 2);
-  Serial.println("W");
-  
-  Serial.print("Baterai - V: ");
-  Serial.print(sensor_data.tegangan_baterai, 2);
-  Serial.print("V, I: ");
-  Serial.print(sensor_data.arus_baterai, 2);
-  Serial.print("A, P: ");
-  Serial.print(sensor_data.daya_baterai, 2);
-  Serial.println("W");
+  if (data_pv.valid) {
+    Serial.printf("PV Data - V: %.2fV, I: %.2fA, P: %.2fW\n", 
+                  data_pv.tegangan, data_pv.arus, data_pv.daya);
+  } else {
+    Serial.println("Invalid PV sensor data!");
+  }
 }
 
-// Fungsi membaca sensor tegangan
-float bacaSensorTegangan(int pin) {
-  int nilai_adc = analogRead(pin);
-  float tegangan_adc = (nilai_adc / RESOLUSI_ADC) * TEGANGAN_REFERENSI_ADC;
-  float tegangan_sebenarnya = tegangan_adc * RASIO_PEMBAGI_TEGANGAN;
-  return tegangan_sebenarnya;
+float konversiTegangan(float adc_value) {
+  float tegangan_adc = (adc_value / RESOLUSI_ADC) * TEGANGAN_REFERENSI_ADC;
+  return tegangan_adc * RASIO_PEMBAGI_TEGANGAN;
 }
 
-// Fungsi membaca sensor arus
-float bacaSensorArus(int pin) {
-  int nilai_adc = analogRead(pin);
-  float tegangan_sensor = (nilai_adc / RESOLUSI_ADC) * TEGANGAN_REFERENSI_ADC;
+float konversiArus(float adc_value) {
+  float tegangan_sensor = (adc_value / RESOLUSI_ADC) * TEGANGAN_REFERENSI_ADC;
   float arus = (tegangan_sensor - OFFSET_SENSOR_ARUS) / SENSITIVITAS_SENSOR_ARUS;
-  return abs(arus); // Return nilai absolut untuk menghindari nilai negatif
+  return max(0.0f, arus); // Pastikan tidak negatif
 }
 
-// Fungsi Logika Fuzzy
-void prosesLogicFuzzy() {
-  if (!mode_manual) {
-    // Proses fuzzifikasi
-    FungsiKeanggotaan tegangan_surya_fuzzy = fuzzifikasiTegangan(sensor_data.tegangan_surya);
-    FungsiKeanggotaan arus_surya_fuzzy = fuzzifikasiArus(sensor_data.arus_surya);
-    FungsiKeanggotaan tegangan_baterai_fuzzy = fuzzifikasiTegangan(sensor_data.tegangan_baterai);
-    FungsiKeanggotaan arus_baterai_fuzzy = fuzzifikasiArus(sensor_data.arus_baterai);
-    
-    // Evaluasi rule fuzzy dan ambil keputusan
-    hasil_fuzzy = evaluasiRuleFuzzy(tegangan_surya_fuzzy, arus_surya_fuzzy, 
-                                   tegangan_baterai_fuzzy, arus_baterai_fuzzy);
-    
-    // Kontrol pompa berdasarkan hasil fuzzy
-    kontrolPompa(hasil_fuzzy.status_pompa);
-    
-    // Debug output
-    Serial.print("Hasil Fuzzy - Status Pompa: ");
-    Serial.print(hasil_fuzzy.status_pompa ? "HIDUP" : "MATI");
-    Serial.print(", Kepercayaan: ");
-    Serial.print(hasil_fuzzy.tingkat_kepercayaan, 2);
-    Serial.print(", Alasan: ");
-    Serial.println(hasil_fuzzy.alasan_keputusan);
+// ===== FUNGSI FUZZY LOGIC =====
+
+void prosesFuzzyLogic() {
+  if (!data_pv.valid) {
+    hasil_fuzzy = {false, 0.0, "Data sensor tidak valid", 0.0};
+    return;
   }
+  
+  // Fuzzifikasi input
+  FungsiKeanggotaan tegangan_fuzzy = fuzzifikasiTegangan(data_pv.tegangan);
+  FungsiKeanggotaan arus_fuzzy = fuzzifikasiArus(data_pv.arus);
+  
+  // Evaluasi rules
+  hasil_fuzzy = evaluasiRules(tegangan_fuzzy, arus_fuzzy);
+  
+  // Debug fuzzy output
+  Serial.printf("Fuzzy Result - Pompa: %s, Confidence: %.2f, Reason: %s\n", 
+                hasil_fuzzy.pompa_hidup ? "ON" : "OFF",
+                hasil_fuzzy.confidence_level,
+                hasil_fuzzy.reasoning.c_str());
 }
 
-// Fungsi fuzzifikasi untuk tegangan
 FungsiKeanggotaan fuzzifikasiTegangan(float tegangan) {
-  FungsiKeanggotaan hasil;
+  FungsiKeanggotaan hasil = {0, 0, 0};
   
-  // Fungsi keanggotaan tegangan rendah (0-15V)
-  if (tegangan <= 12.0) {
+  // Membership function untuk tegangan PV
+  // Rendah: 0-12V (peak at 8V)
+  if (tegangan <= 8.0) {
     hasil.rendah = 1.0;
-  } else if (tegangan > 12.0 && tegangan < 15.0) {
-    hasil.rendah = (15.0 - tegangan) / (15.0 - 12.0);
-  } else {
-    hasil.rendah = 0.0;
+  } else if (tegangan > 8.0 && tegangan < 12.0) {
+    hasil.rendah = (12.0 - tegangan) / 4.0;
   }
   
-  // Fungsi keanggotaan tegangan sedang (12-20V)
-  if (tegangan <= 12.0 || tegangan >= 20.0) {
-    hasil.sedang = 0.0;
-  } else if (tegangan > 12.0 && tegangan <= 17.0) {
-    hasil.sedang = (tegangan - 12.0) / (15.0 - 12.0);
-  } else if (tegangan > 17.0 && tegangan < 20.0) {
-    hasil.sedang = (20.0 - tegangan) / (20.0 - 17.0);
+  // Sedang: 10-18V (peak at 14V)
+  if (tegangan >= 10.0 && tegangan <= 14.0) {
+    hasil.sedang = (tegangan - 10.0) / 4.0;
+  } else if (tegangan > 14.0 && tegangan <= 18.0) {
+    hasil.sedang = (18.0 - tegangan) / 4.0;
   }
   
-  // Fungsi keanggotaan tegangan tinggi (17-24V)
-  if (tegangan <= 17.0) {
-    hasil.tinggi = 0.0;
-  } else if (tegangan > 17.0 && tegangan < 20.0) {
-    hasil.tinggi = (tegangan - 17.0) / (20.0 - 17.0);
-  } else {
+  // Tinggi: 16-24V (peak at 20V)
+  if (tegangan >= 16.0 && tegangan <= 20.0) {
+    hasil.tinggi = (tegangan - 16.0) / 4.0;
+  } else if (tegangan > 20.0) {
     hasil.tinggi = 1.0;
   }
   
   return hasil;
 }
 
-// Fungsi fuzzifikasi untuk arus
 FungsiKeanggotaan fuzzifikasiArus(float arus) {
-  FungsiKeanggotaan hasil;
+  FungsiKeanggotaan hasil = {0, 0, 0};
   
-  // Fungsi keanggotaan arus rendah (0-3A)
-  if (arus <= 1.5) {
+  // Membership function untuk arus PV
+  // Rendah: 0-2A (peak at 1A)
+  if (arus <= 1.0) {
     hasil.rendah = 1.0;
-  } else if (arus > 1.5 && arus < 3.0) {
-    hasil.rendah = (3.0 - arus) / (3.0 - 1.5);
-  } else {
-    hasil.rendah = 0.0;
+  } else if (arus > 1.0 && arus < 2.0) {
+    hasil.rendah = (2.0 - arus) / 1.0;
   }
   
-  // Fungsi keanggotaan arus sedang (1.5-5A)
-  if (arus <= 1.5 || arus >= 5.0) {
-    hasil.sedang = 0.0;
-  } else if (arus > 1.5 && arus <= 4.0) {
-    hasil.sedang = (arus - 1.5) / (3.0 - 1.5);
-  } else if (arus > 4.0 && arus < 5.0) {
-    hasil.sedang = (5.0 - arus) / (5.0 - 4.0);
+  // Sedang: 1.5-4A (peak at 2.75A)
+  if (arus >= 1.5 && arus <= 2.75) {
+    hasil.sedang = (arus - 1.5) / 1.25;
+  } else if (arus > 2.75 && arus <= 4.0) {
+    hasil.sedang = (4.0 - arus) / 1.25;
   }
   
-  // Fungsi keanggotaan arus tinggi (4-10A)
-  if (arus <= 4.0) {
-    hasil.tinggi = 0.0;
-  } else if (arus > 4.0 && arus < 5.0) {
-    hasil.tinggi = (arus - 4.0) / (5.0 - 4.0);
-  } else {
+  // Tinggi: 3.5-8A (peak at 5.75A)
+  if (arus >= 3.5 && arus <= 5.75) {
+    hasil.tinggi = (arus - 3.5) / 2.25;
+  } else if (arus > 5.75) {
     hasil.tinggi = 1.0;
   }
   
   return hasil;
 }
 
-// Fungsi evaluasi rule fuzzy
-OutputFuzzy evaluasiRuleFuzzy(FungsiKeanggotaan teg_surya, FungsiKeanggotaan arus_surya,
-                              FungsiKeanggotaan teg_baterai, FungsiKeanggotaan arus_baterai) {
-  OutputFuzzy hasil;
-  float skor_hidup = 0.0;
-  float skor_mati = 0.0;
-  String alasan = "";
+OutputFuzzy evaluasiRules(FungsiKeanggotaan teg, FungsiKeanggotaan arus) {
+  OutputFuzzy output;
+  float activation_hidup = 0.0;
+  float activation_mati = 0.0;
+  String reasoning = "";
   
-  // Rule 1-9: Evaluasi panel surya
-  // Rule 5: Jika tegangan sedang DAN arus sedang maka pompa HIDUP
-  float rule5 = min(teg_surya.sedang, arus_surya.sedang);
-  skor_hidup = max(skor_hidup, rule5);
+  // Rules untuk kondisi HIDUP
+  // Rule 1: Jika tegangan SEDANG dan arus SEDANG maka HIDUP
+  float rule1 = min(teg.sedang, arus.sedang);
+  activation_hidup = max(activation_hidup, rule1);
   
-  // Rule 6: Jika tegangan sedang DAN arus tinggi maka pompa HIDUP  
-  float rule6 = min(teg_surya.sedang, arus_surya.tinggi);
-  skor_hidup = max(skor_hidup, rule6);
+  // Rule 2: Jika tegangan SEDANG dan arus TINGGI maka HIDUP
+  float rule2 = min(teg.sedang, arus.tinggi);
+  activation_hidup = max(activation_hidup, rule2);
   
-  // Rule 8: Jika tegangan tinggi DAN arus sedang maka pompa HIDUP
-  float rule8 = min(teg_surya.tinggi, arus_surya.sedang);
-  skor_hidup = max(skor_hidup, rule8);
+  // Rule 3: Jika tegangan TINGGI dan arus SEDANG maka HIDUP
+  float rule3 = min(teg.tinggi, arus.sedang);
+  activation_hidup = max(activation_hidup, rule3);
   
-  // Rule 9: Jika tegangan tinggi DAN arus tinggi maka pompa HIDUP
-  float rule9 = min(teg_surya.tinggi, arus_surya.tinggi);
-  skor_hidup = max(skor_hidup, rule9);
+  // Rule 4: Jika tegangan TINGGI dan arus TINGGI maka HIDUP
+  float rule4 = min(teg.tinggi, arus.tinggi);
+  activation_hidup = max(activation_hidup, rule4);
   
-  // Rule untuk kondisi mati (rule 1,2,3,4,7)
-  float rule1 = min(teg_surya.rendah, arus_surya.rendah);
-  float rule2 = min(teg_surya.rendah, arus_surya.sedang);
-  float rule3 = min(teg_surya.rendah, arus_surya.tinggi);
-  float rule4 = min(teg_surya.sedang, arus_surya.rendah);
-  float rule7 = min(teg_surya.tinggi, arus_surya.rendah);
+  // Rule 5: Jika tegangan TINGGI dan arus RENDAH maka HIDUP (kondisi khusus)
+  float rule5 = min(teg.tinggi, arus.rendah) * 0.7; // Reduce weight
+  activation_hidup = max(activation_hidup, rule5);
   
-  skor_mati = max({rule1, rule2, rule3, rule4, rule7});
+  // Rules untuk kondisi MATI
+  // Rule 6: Jika tegangan RENDAH maka MATI (apapun arusnya)
+  float rule6 = max({min(teg.rendah, arus.rendah), 
+                     min(teg.rendah, arus.sedang), 
+                     min(teg.rendah, arus.tinggi)});
+  activation_mati = max(activation_mati, rule6);
   
-  // Evaluasi baterai juga (rule 14,15,17,18 untuk hidup)
-  float rule14 = min(teg_baterai.sedang, arus_baterai.sedang);
-  float rule15 = min(teg_baterai.sedang, arus_baterai.tinggi);
-  float rule17 = min(teg_baterai.tinggi, arus_baterai.sedang);
-  float rule18 = min(teg_baterai.tinggi, arus_baterai.tinggi);
+  // Rule 7: Jika arus RENDAH dan tegangan SEDANG maka MATI
+  float rule7 = min(teg.sedang, arus.rendah);
+  activation_mati = max(activation_mati, rule7);
   
-  float skor_hidup_baterai = max({rule14, rule15, rule17, rule18});
-  
-  // Gabungan keputusan: pompa hidup jika panel surya ATAU baterai mencukupi
-  skor_hidup = max(skor_hidup, skor_hidup_baterai);
-  
-  // Ambil keputusan final
-  if (skor_hidup > skor_mati) {
-    hasil.status_pompa = true;
-    hasil.tingkat_kepercayaan = skor_hidup;
-    alasan = "Daya mencukupi";
-  } else {
-    hasil.status_pompa = false;
-    hasil.tingkat_kepercayaan = skor_mati;
-    alasan = "Daya tidak mencukupi";
-  }
-  
-  // Tambahan keamanan: jika tegangan baterai terlalu rendah, paksa mati
-  if (sensor_data.tegangan_baterai < 10.5) {
-    hasil.status_pompa = false;
-    alasan = "Baterai lemah - proteksi";
-  }
-  
-  hasil.alasan_keputusan = alasan;
-  return hasil;
-}
-
-// Fungsi kontrol pompa
-void kontrolPompa(bool status) {
-  static bool status_sebelumnya = false;
-  
-  if (status != status_sebelumnya) {
-    if (status) {
-      digitalWrite(PIN_RELAY_POMPA, HIGH);
-      waktu_mulai_pompa = millis();
-      pompa_sedang_hidup = true;
-      Serial.println(">>> POMPA DIHIDUPKAN <<<");
-    } else {
-      digitalWrite(PIN_RELAY_POMPA, LOW);
-      if (pompa_sedang_hidup) {
-        total_waktu_hidup_pompa += (millis() - waktu_mulai_pompa);
-        pompa_sedang_hidup = false;
-      }
-      Serial.println(">>> POMPA DIMATIKAN <<<");
-    }
-    status_sebelumnya = status;
-  }
-}
-
-// Fungsi kirim data sensor ke Blynk
-void kirimDataSensor() {
-  if (WiFi.status() == WL_CONNECTED) {
-    Blynk.virtualWrite(VPIN_TEGANGAN_SURYA, sensor_data.tegangan_surya);
-    Blynk.virtualWrite(VPIN_ARUS_SURYA, sensor_data.arus_surya);
-    Blynk.virtualWrite(VPIN_TEGANGAN_BATERAI, sensor_data.tegangan_baterai);
-    Blynk.virtualWrite(VPIN_ARUS_BATERAI, sensor_data.arus_baterai);
-    Blynk.virtualWrite(VPIN_STATUS_POMPA, hasil_fuzzy.status_pompa ? 1 : 0);
-    Blynk.virtualWrite(VPIN_DAYA_SURYA, sensor_data.daya_surya);
-    Blynk.virtualWrite(VPIN_DAYA_BATERAI, sensor_data.daya_baterai);
-  }
-}
-
-// Fungsi kirim statistik sistem
-void kirimStatistik() {
-  if (WiFi.status() == WL_CONNECTED) {
-    float efisiensi_panel = 0;
-    if (sensor_data.daya_surya > 0) {
-      efisiensi_panel = (sensor_data.daya_surya / 100) * 100; // Asumsi panel 100W
-    }
+  // Defuzzifikasi dan keputusan
+  if (activation_hidup > activation_mati && activation_hidup > 0.3) {
+    output.pompa_hidup = true;
+    output.confidence_level = activation_hidup;
+    output.fuzzy_output_value = activation_hidup;
     
-    // Kirim data tambahan melalui terminal Blynk
-    Blynk.virtualWrite(V10, String("Efisiensi Panel: ") + String(efisiensi_panel, 1) + "%");
-    Blynk.virtualWrite(V11, String("Total Waktu Pompa: ") + String(total_waktu_hidup_pompa/1000) + "s");
-  }
-}
-
-// Handler untuk kontrol manual dari Blynk
-BLYNK_WRITE(VPIN_KONTROL_MANUAL) {
-  int nilai = param.asInt();
-  if (nilai == 1) {
-    mode_manual = true;
-    kontrolPompa(true);
-    Serial.println("Mode manual: POMPA HIDUP");
+    if (rule4 > 0.5) reasoning = "Tegangan & Arus Tinggi";
+    else if (rule3 > 0.3) reasoning = "Tegangan Tinggi, Arus Cukup";
+    else if (rule2 > 0.3) reasoning = "Tegangan Cukup, Arus Tinggi";
+    else if (rule1 > 0.3) reasoning = "Kondisi PV Optimal";
+    else reasoning = "PV Cukup untuk Operasi";
   } else {
-    mode_manual = false;
-    Serial.println("Mode otomatis diaktifkan");
+    output.pompa_hidup = false;
+    output.confidence_level = activation_mati;
+    output.fuzzy_output_value = 0.0;
+    
+    if (rule6 > 0.5) reasoning = "Tegangan PV Terlalu Rendah";
+    else if (rule7 > 0.3) reasoning = "Arus PV Tidak Mencukupi";
+    else reasoning = "Kondisi PV Tidak Optimal";
+  }
+  
+  // Tambahan proteksi berdasarkan daya minimum
+  if (data_pv.daya < 10.0) { // Minimum 10W untuk operasi
+    output.pompa_hidup = false;
+    output.confidence_level = 1.0;
+    reasoning = "Daya PV < 10W (Minimum Required)";
+  }
+  
+  output.reasoning = reasoning;
+  return output;
+}
+
+// ===== FUNGSI KONTROL POMPA =====
+
+void eksekusiKontrolOtomatis() {
+  bool should_activate = hasil_fuzzy.pompa_hidup;
+  
+  // Cek apakah manual sedang aktif dan prioritas manual
+  if (kontrol_pompa.manual_active && kontrol_pompa.prioritas_manual) {
+    should_activate = false;
+    Serial.println("Auto control disabled - Manual priority active");
+  }
+  
+  // Eksekusi kontrol
+  if (should_activate != kontrol_pompa.auto_active) {
+    if (should_activate) {
+      aktivasiPompaOtomatis();
+    } else {
+      deaktivasiPompaOtomatis();
+    }
   }
 }
 
-// Fungsi cek koneksi WiFi
-void cekKoneksiWiFi() {
-  static unsigned long waktu_cek_terakhir = 0;
+void aktivasiPompaOtomatis() {
+  // Pastikan manual tidak aktif jika tidak ada prioritas manual
+  if (kontrol_pompa.manual_active && !kontrol_pompa.prioritas_manual) {
+    digitalWrite(PIN_RELAY_POMPA_MANUAL, LOW);
+    kontrol_pompa.manual_active = false;
+    Serial.println("Manual pump deactivated - Auto taking over");
+  }
   
-  if (millis() - waktu_cek_terakhir > 30000) { // Cek setiap 30 detik
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("WiFi terputus, mencoba reconnect...");
-      WiFi.reconnect();
-      digitalWrite(PIN_LED_STATUS, LOW);
-    } else {
-      digitalWrite(PIN_LED_STATUS, HIGH);
-    }
-    waktu_cek_terakhir = millis();
+  digitalWrite(PIN_RELAY_POMPA_AUTO, HIGH);
+  kontrol_pompa.auto_active = true;
+  kontrol_pompa.auto_start_time = millis();
+  stats.auto_activations++;
+  
+  Serial.println(">>> POMPA OTOMATIS DIHIDUPKAN <<<");
+  Serial.printf("Reason: %s (Confidence: %.2f)\n", 
+                hasil_fuzzy.reasoning.c_str(), 
+                hasil_fuzzy.confidence_level);
+  
+  // Send notification to Blynk
+  if (WiFi.status() == WL_CONNECTED) {
+    Blynk.logEvent("pump_auto_on", String("Auto pump ON: ") + hasil_fuzzy.reasoning);
   }
 }
+
+void deaktivasiPompaOtomatis() {
+  digitalWrite(PIN_RELAY_POMPA_AUTO, LOW);
+  
+  if (kontrol_pompa.auto_active) {
+    kontrol_pompa.total_auto_runtime += (millis() - kontrol_pompa.auto_start_time);
+  }
+  
+  kontrol_pompa.auto_active = false;
+  
+  Serial.println(">>> POMPA OTOMATIS DIMATIKAN <<<");
+  Serial.printf("Reason: %s\n", hasil_fuzzy.reasoning.c_str());
+  
+  // Send notification to Blynk
+  if (WiFi.status() == WL_CONNECTED) {
+    Blynk.logEvent("pump_auto_off", String("Auto pump OFF: ") + hasil_fuzzy.reasoning);
+  }
+}
+
+void aktivasiPompaManual() {
+  // Pastikan auto tidak aktif jika prioritas manual
+  if (kontrol_pompa.auto_active && kontrol_pompa.prioritas_manual) {
+    digitalWrite(PIN_RELAY_POMPA_AUTO, LOW);
+    kontrol_pompa.auto_active = false;
+    Serial.println("Auto pump deactivated - Manual priority");
+  }
+  
+  digitalWrite(PIN_RELAY_POMPA_MANUAL, HIGH);
+  kontrol_pompa.manual_active = true;
+  kontrol_pompa.manual_start_time = millis();
+  stats.manual_activations++;
+  
+  Serial.println(">>> POMPA MANUAL DIHIDUPKAN <<<");
+  Serial.println("Source: Battery via Blynk control");
+}
+
+void deaktivasiPompaManual() {
+  digitalWrite(PIN_RELAY_POMPA_MANUAL, LOW);
+  
+  if (kontrol_pompa.manual_active) {
+    kontrol_pompa.total_manual_runtime += (millis() - kontrol_pompa.manual_start_time);
+  }
+  
+  kontrol_pompa.manual_active = false;
+  
+  Serial.println(">>> POMPA MANUAL DIMATIKAN <<<");
+}
+
+// ===== FUNGSI BLYNK HANDLERS =====
+
+BLYNK_WRITE(VPIN_KONTROL_MANUAL) {
+  int value = param.asInt();
+  
+  if (value == 1) {
+    aktivasiPompaManual();
+  } else {
+    deaktivasiPompaManual();
+  }
+}
+
+BLYNK_WRITE(VPIN_MODE_PRIORITAS) {
+  int value = param.asInt();
+  kontrol_pompa.prioritas_manual = (value == 1);
+  
+  Serial.printf("Priority mode changed: %s\n", 
+                kontrol_pompa.prioritas_manual ? "MANUAL" : "AUTO");
+  
+  // Log ke terminal Blynk
+  String msg = String("Priority: ") + (kontrol_pompa.prioritas_manual ? "MANUAL" : "AUTO");
+  Blynk.virtualWrite(VPIN_TERMINAL_LOG, msg);
+}
+
+BLYNK_CONNECTED() {
+  Serial.println("Blynk connected!");
+  Blynk.syncVirtual(VPIN_KONTROL_MANUAL, VPIN_MODE_PRIORITAS);
+}
+
+// ===== FUNGSI MONITORING & LOGGING =====
+
+void kirimDataBlynk() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  
+  // Kirim data sensor PV
+  Blynk.virtualWrite(VPIN_TEGANGAN_PV, data_pv.tegangan);
+  Blynk.virtualWrite(VPIN_ARUS_PV, data_pv.arus);
+  Blynk.virtualWrite(VPIN_DAYA_PV, data_pv.daya);
+  
+  // Kirim status pompa
+  Blynk.virtualWrite(VPIN_STATUS_AUTO, kontrol_pompa.auto_active ? 1 : 0);
+  Blynk.virtualWrite(VPIN_STATUS_MANUAL, kontrol_pompa.manual_active ? 1 : 0);
+  
+  // Kirim efisiensi PV
+  float efisiensi = (data_pv.daya / DAYA_NOMINAL_PV) * 100.0;
+  efisiensi = min(100.0f, efisiensi);
+  Blynk.virtualWrite(VPIN_EFISIENSI_PV, efisiensi);
+  
+  // Update statistik di Blynk
+  String stats_text = String("Auto: ") + String(kontrol_pompa.total_auto_runtime/1000) + "s | " +
+                     String("Manual: ") + String(kontrol_pompa.total_manual_runtime/1000) + "s";
+  Blynk.virtualWrite(VPIN_STATISTIK, stats_text);
+}
+
+void updateStatistik() {
+  // Update statistik energi
+  stats.total_energi_pv += (data_pv.daya * INTERVAL_STATISTIK) / 3600000.0; // Wh
+  
+  // Update max daya
+  if (data_pv.daya > stats.max_daya_pv) {
+    stats.max_daya_pv = data_pv.daya;
+  }
+  
+  // Update rata-rata efisiensi
+  float efisiensi_saat_ini = (data_pv.daya / DAYA_NOMINAL_PV) * 100.0;
+  stats.rata_rata_efisiensi = (stats.rata_rata_efisiensi + efisiensi_saat_ini) / 2.0;
+  stats.total_operasi++;
+}
+
+void logStatusSistem() {
+  Serial.println("=== STATUS SISTEM ===");
+  Serial.printf("PV: %.2fV, %.2fA, %.2fW\n", data_pv.tegangan, data_pv.arus, data_pv.daya);
+  Serial.printf("Auto Pump: %s | Manual Pump: %s\n", 
+                kontrol_pompa.auto_active ? "ON" : "OFF",
+                kontrol_pompa.manual_active ? "ON" : "OFF");
+  Serial.printf("Priority: %s | WiFi: %s\n",
+                kontrol_pompa.prioritas_manual ? "MANUAL" : "AUTO",
+                WiFi.status() == WL_CONNECTED ? "OK" : "DISCONNECTED");
+  Serial.printf("Fuzzy Output: %.2f (%s)\n", 
+                hasil_fuzzy.confidence_level, hasil_fuzzy.reasoning.c_str());
+  Serial.println("====================");
+  
+  // Log ke Blynk terminal
+  if (WiFi.status() == WL_CONNECTED) {
+    String log_msg = String("PV: ") + String(data_pv.daya, 1) + "W | " +
+                    String("Auto: ") + (kontrol_pompa.auto_active ? "ON" : "
